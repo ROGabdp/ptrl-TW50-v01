@@ -123,11 +123,13 @@ if __name__ == "__main__":
             print(f"Final Capital:   {final_val:,.0f}")
             print(f"Total Return:    {roi:.2f}%")
             
-            # --- Benchmark Comparison (0050.TW) ---
+            # --- Benchmark Comparison (^TWII) ---
             bench_roi = 0.0
             bench_data = None
-            if "0050.TW" in raw_data_dict:
-                bench_df = raw_data_dict["0050.TW"]
+            bench_ticker = "^TWII"
+            
+            if bench_ticker in raw_data_dict:
+                bench_df = raw_data_dict[bench_ticker]
                 # Filter benchmark data to match backtest dates
                 mask = (bench_df.index >= pd.Timestamp(start_date)) & (bench_df.index <= pd.Timestamp(end_date))
                 bench_data = bench_df.loc[mask].copy()
@@ -142,14 +144,14 @@ if __name__ == "__main__":
                     # Create normalized series for plotting (scaled to initial capital)
                     bench_data['Normalized_Value'] = (bench_data['Close'] / bench_start_price) * initial_val
                     
-                    print(f"0050 Benchmark:  {bench_roi:.2f}%")
+                    print(f"Benchmark ({bench_ticker}):  {bench_roi:.2f}%")
             
             # Plot
             plt.figure(figsize=(12, 6))
             plt.plot(daily_stats.index, daily_stats['Total_Value'], label=f'AI Portfolio (ROI: {roi:.2f}%)', color='red', linewidth=2)
             
             if bench_data is not None and not bench_data.empty:
-                 plt.plot(bench_data.index, bench_data['Normalized_Value'], label=f'0050 Benchmark (ROI: {bench_roi:.2f}%)', color='gray', linestyle='--')
+                 plt.plot(bench_data.index, bench_data['Normalized_Value'], label=f'Benchmark {bench_ticker} (ROI: {bench_roi:.2f}%)', color='gray', linestyle='--')
 
             plt.title(f'Backtest Result ({start_date} to {end_date})')
             plt.xlabel('Date')
