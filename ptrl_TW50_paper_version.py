@@ -608,6 +608,7 @@ if __name__ == "__main__":
     # Eval env should remain single for accurate evaluation
     # Eval env should remain single for accurate evaluation, but use SubprocVecEnv to match training env type
     eval_env = make_vec_env(BuyEnvPaper, n_envs=1, seed=0, vec_env_cls=SubprocVecEnv, env_kwargs={'data_dict': train_data, 'is_training': True})
+    eval_sell_env = make_vec_env(SellEnvPaper, n_envs=1, seed=0, vec_env_cls=SubprocVecEnv, env_kwargs={'data_dict': train_data})
     
     # 4. 設定 PPO 參數 (Optimized for Speed)
     # Paper: "3 hidden layers" -> net_arch=[64, 64, 64] (approx)
@@ -738,43 +739,109 @@ if __name__ == "__main__":
     # 6. 訓練 Sell Agent
     print("\n=== 檢查 Sell Agent 模型 ===")
     final_sell_path = os.path.join(MODELS_PATH, "ppo_sell_paper_final.zip")
+    best_sell_path = os.path.join(MODELS_PATH, "best_sell_paper", "best_model.zip")
     
     sell_model = None
     should_train_sell = True
     
-    if os.path.exists(final_sell_path):
+    # Check for checkpoints
+    sell_ckpt_files = glob.glob(os.path.join(MODELS_PATH, "ppo_sell_paper_*_steps.zip"))
+    has_sell_model = os.path.exists(final_sell_path) or os.path.exists(best_sell_path) or len(sell_ckpt_files) > 0
+    
+    if has_sell_model:
         print(f"\n⚠️ 偵測到已存在的 Sell Agent 模型！")
-        print(f"路徑: {final_sell_path}")
+        if os.path.exists(best_sell_path):
+             print(f"發現最佳模型: {best_sell_path}")
+        if os.path.exists(final_sell_path):
+             print(f"發現最終模型: {final_sell_path}")
+        elif sell_ckpt_files:
+             print(f"發現 {len(sell_ckpt_files)} 個 Checkpoints")
+
         print("請選擇操作:")
         print("1. 使用現有模型 (跳過訓練)")
-        print("2. 將模型刪除，重新開始訓練 (Restart)")
+        print("2. 接續先前中斷的訓練 (Resume)")
+        print("3. 將模型刪除，重新開始訓練 (Restart)")
         
-        choice = input("請輸入選項 (1/2): ").strip()
+        choice = input("請輸入選項 (1/2/3): ").strip()
         
         if choice == '1':
             print("✅ 選擇使用現有模型，跳過訓練...")
-            sell_model = PPO.load(final_sell_path, device=device)
-            print(f"已載入賣出模型: {final_sell_path}")
+            if os.path.exists(best_sell_path):
+                sell_model = PPO.load(best_sell_path, device=device)
+                print(f"已載入最佳模型: {best_sell_path}")
+            elif os.path.exists(final_sell_path):
+                sell_model = PPO.load(final_sell_path, device=device)
+                print(f"已載入最終模型: {final_sell_path}")
+            elif sell_ckpt_files:
+                 latest_ckpt = max(sell_ckpt_files, key=lambda x: int(x.split('_')[-2]))
+                 sell_model = PPO.load(latest_ckpt, device=device)
+                 print(f"已載入最新 Checkpoint: {latest_ckpt}")
             should_train_sell = False
             
         elif choice == '2':
+            print("🔄 選擇接續訓練...")
+            latest_ckpt = None
+            if sell_ckpt_files:
+                latest_ckpt = max(sell_ckpt_files, key=lambda x: int(x.split('_')[-2]))
+            
+            if latest_ckpt:
+                sell_model = PPO.load(latest_ckpt, env=sell_env, device=device)
+                print(f"已載入最新存檔準備接續訓練: {latest_ckpt}")
+            elif os.path.exists(best_sell_path):
+                sell_model = PPO.load(best_sell_path, env=sell_env, device=device)
+                print(f"⚠️ 找不到 checkpoint，已載入最佳模型: {best_sell_path}")
+            elif os.path.exists(final_sell_path):
+                sell_model = PPO.load(final_sell_path, env=sell_env, device=device)
+                print(f"已載入最終模型準備接續訓練: {final_sell_path}")
+            else:
+                 print("⚠️ 找不到任何模型可供接續，將重新開始訓練。")
+                 sell_model = None
+            should_train_sell = True
+
+        elif choice == '3':
             print("🗑️ 選擇刪除舊模型並重新訓練...")
-            try:
-                os.remove(final_sell_path)
-                print(f"已刪除: {final_sell_path}")
-            except OSError as e:
-                print(f"無法刪除 {final_sell_path}: {e}")
+            for p in [final_sell_path, best_sell_path]:
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                        print(f"已刪除: {p}")
+                    except OSError as e:
+                        print(f"無法刪除 {p}: {e}")
+            
+            for p in sell_ckpt_files:
+                try:
+                    os.remove(p)
+                    print(f"已刪除 Checkpoint: {p}")
+                except OSError as e:
+                    print(f"無法刪除 Checkpoint {p}: {e}")
+
             sell_model = None
             should_train_sell = True
         else:
             print("⚠️ 輸入無效，預設為使用現有模型 (跳過訓練)...")
-            sell_model = PPO.load(final_sell_path, device=device)
+            if os.path.exists(best_sell_path):
+                sell_model = PPO.load(best_sell_path, device=device)
+            elif os.path.exists(final_sell_path):
+                sell_model = PPO.load(final_sell_path, device=device)
+            elif sell_ckpt_files:
+                 latest_ckpt = max(sell_ckpt_files, key=lambda x: int(x.split('_')[-2]))
+                 sell_model = PPO.load(latest_ckpt, device=device)
             should_train_sell = False
 
     if should_train_sell:
-        print("🚀 開始訓練 Sell Agent (Paper Logic)...")
-        sell_model = PPO("MlpPolicy", sell_env, **ppo_params)
-        sell_model.learn(total_timesteps=TOTAL_TIMESTEPS_SELL)
+        if sell_model is None:
+            print("🚀 開始全新訓練 Sell Agent (Paper Logic)...")
+            sell_model = PPO("MlpPolicy", sell_env, **ppo_params)
+        else:
+            print("🚀 接續訓練 Sell Agent (Paper Logic)...")
+        
+        # Add CheckpointCallback for Sell Agent
+        sell_checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=MODELS_PATH, name_prefix="ppo_sell_paper")
+        sell_eval_callback = EvalCallback(eval_sell_env, best_model_save_path=os.path.join(MODELS_PATH, "best_sell_paper"),
+                                     log_path=RESULTS_PATH, eval_freq=2000, n_eval_episodes=100, deterministic=True, render=False)
+        sell_callbacks = CallbackList([sell_checkpoint_callback, sell_eval_callback])
+        
+        sell_model.learn(total_timesteps=TOTAL_TIMESTEPS_SELL, callback=sell_callbacks, reset_num_timesteps=False)
         sell_model.save(os.path.join(MODELS_PATH, "ppo_sell_paper_final"))
     
     # 7. 執行回測
@@ -785,7 +852,13 @@ if __name__ == "__main__":
     else:
         buy_model = PPO.load(os.path.join(MODELS_PATH, "ppo_buy_paper_final"), device=device)
     
-    sell_model = PPO.load(os.path.join(MODELS_PATH, "ppo_sell_paper_final"), device=device)
+    best_sell_path = os.path.join(MODELS_PATH, "best_sell_paper", "best_model.zip")
+    if os.path.exists(best_sell_path):
+        sell_model = PPO.load(best_sell_path, device=device)
+        print(f"回測使用最佳 Sell Model: {best_sell_path}")
+    else:
+        sell_model = PPO.load(os.path.join(MODELS_PATH, "ppo_sell_paper_final"), device=device)
+        print(f"回測使用最終 Sell Model")
     
     stock_data_only = {k: v for k, v in processed_data.items() if k != "^TWII" and k != "0050.TW"}
     analyzer = DetailedBacktesterPaper(stock_data_only, buy_model, sell_model)
