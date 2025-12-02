@@ -1,0 +1,7 @@
+- [x] Create `requirements.txt` for local environment <!-- id: 12 -->
+- [x] Create `ptrl_TW50_local_gpu.py` adapted from `ptrl_TW50_optimized.py` <!-- id: 13 -->
+    - [x] Remove Colab-specific code <!-- id: 14 -->
+    - [x] Implement local path management <!-- id: 15 -->
+    - [x] Add GPU detection and configuration <!-- id: 16 -->
+    - [x] Refactor into functions/main block <!-- id: 17 -->
+- [x] Verify script syntax and imports <!-- id: 18 -->

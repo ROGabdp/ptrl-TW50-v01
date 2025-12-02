@@ -1,0 +1,9 @@
+stable-baselines3[extra]
+yfinance
+pandas
+pandas_ta
+gymnasium
+matplotlib
+shimmy>=0.2.1
+torch
+tqdm

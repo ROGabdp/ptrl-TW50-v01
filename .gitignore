@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Models and Data
+models/
+models_paper/
+results/
+results_paper/
+data/
+*.zip
+*.npz
+
+# Intermediate files
+pdf_content.txt
