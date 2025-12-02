@@ -634,19 +634,22 @@ if __name__ == "__main__":
     # 5. 訓練 Buy Agent
     print("\n=== 檢查 Buy Agent 模型 ===")
     
-    # Paper Timesteps (Reference)
-    # TOTAL_TIMESTEPS_BUY = 12_220_000 # Paper Value
-    # TOTAL_TIMESTEPS_SELL = 9_460_000 # Paper Value
-    
-    # Testing Timesteps
+    # ... (Buy Agent Params) ...
     TOTAL_TIMESTEPS_BUY = 2_000_000
     TOTAL_TIMESTEPS_SELL = 1_000_000
     print(f"訓練步數設定: Buy={TOTAL_TIMESTEPS_BUY}, Sell={TOTAL_TIMESTEPS_SELL}")
     print(f"(註：論文原始設定約為 Buy=12.2M, Sell=9.5M)")
 
+    # Separate Log Paths
+    BUY_RESULTS_PATH = os.path.join(RESULTS_PATH, "buy")
+    SELL_RESULTS_PATH = os.path.join(RESULTS_PATH, "sell")
+    for p in [BUY_RESULTS_PATH, SELL_RESULTS_PATH]:
+        if not os.path.exists(p):
+            os.makedirs(p)
+
     checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=MODELS_PATH, name_prefix="ppo_buy_paper")
     eval_callback = EvalCallback(eval_env, best_model_save_path=os.path.join(MODELS_PATH, "best_buy_paper"),
-                                 log_path=RESULTS_PATH, eval_freq=2000, n_eval_episodes=100, deterministic=True, render=False)
+                                 log_path=BUY_RESULTS_PATH, eval_freq=2000, n_eval_episodes=100, deterministic=True, render=False)
     callbacks = CallbackList([checkpoint_callback, eval_callback])
     
     # 檢查是否已有訓練好的模型
@@ -838,7 +841,7 @@ if __name__ == "__main__":
         # Add CheckpointCallback for Sell Agent
         sell_checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=MODELS_PATH, name_prefix="ppo_sell_paper")
         sell_eval_callback = EvalCallback(eval_sell_env, best_model_save_path=os.path.join(MODELS_PATH, "best_sell_paper"),
-                                     log_path=RESULTS_PATH, eval_freq=2000, n_eval_episodes=100, deterministic=True, render=False)
+                                     log_path=SELL_RESULTS_PATH, eval_freq=2000, n_eval_episodes=100, deterministic=True, render=False)
         sell_callbacks = CallbackList([sell_checkpoint_callback, sell_eval_callback])
         
         sell_model.learn(total_timesteps=TOTAL_TIMESTEPS_SELL, callback=sell_callbacks, reset_num_timesteps=False)
