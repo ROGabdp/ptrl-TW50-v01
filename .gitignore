@@ -11,6 +11,7 @@ debug_*.py
 diagnose_*.py
 check_*.py
 *.txt
+!requirements.txt
 
 # Models and Data
 models/
