@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Pro Trader RL - Flexible Backtest (Split Model Version)
+Pro Trader RL - 2330.TW Dedicated Backtest
 Features:
-- Uses models trained by `ptrl_TW50_split_train.py`
+- Only trades 2330.TW (TSMC)
 - Flexible Date Range Selection
-- Saves detailed trade logs to CSV
-- Prints summary table of recent trades
+- Visualization with Buy (Red ^) / Sell (Green v) markers
 - Benchmark Comparison (^TWII)
 """
 
@@ -46,15 +45,9 @@ def setup_environment():
 
 # --- 1. 資料下載 (Start Date: 2000-01-01) ---
 def fetch_tw50_data(data_path, start_date="2000-01-01"):
-    tickers = [
-        "0050.TW", "^TWII",
-        "2330.TW", "2317.TW", "2454.TW", "2881.TW", "2382.TW", "2308.TW", "2882.TW", "2412.TW", "2891.TW", "3711.TW",
-        "2886.TW", "2884.TW", "2303.TW", "2885.TW", "3231.TW", "3034.TW", "5880.TW", "2892.TW", "3008.TW", "2357.TW",
-        "2002.TW", "2890.TW", "1101.TW", "2880.TW", "2883.TW", "2887.TW", "2345.TW", "3045.TW", "5871.TW", "3037.TW",
-        "2912.TW", "1216.TW", "6505.TW", "4938.TW", "5876.TW", "1303.TW", "2395.TW", "2379.TW", "1301.TW", "3017.TW",
-        "1326.TW", "2603.TW", "1590.TW", "3661.TW", "2327.TW", "4904.TW", "2801.TW", "1605.TW", "1504.TW", "2207.TW"
-    ]
-    print(f"開始下載 {len(tickers)} 檔標的資料 (Start: {start_date})...")
+    # Only need 2330.TW and ^TWII
+    tickers = ["2330.TW", "^TWII"]
+    print(f"開始下載 2330.TW 與 ^TWII 資料 (Start: {start_date})...")
     data = yf.download(tickers, start=start_date, group_by='ticker', auto_adjust=True, threads=True, progress=False)
     clean_data = {}
     if "^TWII" in data.columns.levels[0]:
@@ -63,18 +56,14 @@ def fetch_tw50_data(data_path, start_date="2000-01-01"):
             market_index.columns = market_index.columns.get_level_values(0)
         clean_data["^TWII"] = market_index
 
-    for t in tqdm(tickers):
-        if t == "^TWII": continue
-        try:
-            df = data[t].copy()
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df = df.rename(columns={"Open": "Open", "High": "High", "Low": "Low", "Close": "Close", "Volume": "Volume"})
-            df = df.dropna()
-            if len(df) > 250:
-                clean_data[t] = df
-        except Exception as e:
-            print(f"Skipping {t}: {e}")
+    if "2330.TW" in data.columns.levels[0]:
+        df = data["2330.TW"].copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.rename(columns={"Open": "Open", "High": "High", "Low": "Low", "Close": "Close", "Volume": "Volume"})
+        df = df.dropna()
+        clean_data["2330.TW"] = df
+        
     return clean_data, clean_data.get("^TWII")
 
 # --- 2. 特徵工程 (Feature Engineering) ---
@@ -153,34 +142,40 @@ def calculate_features(df_in, benchmark_df):
     return df.dropna()
 
 # --- 3. Backtester Class ---
-class DetailedBacktesterFlexible:
+class Backtester2330:
     def __init__(self, data_dict, buy_model, sell_model, start_date, end_date, initial_capital=1000000):
         self.data_dict = data_dict
         self.buy_model = buy_model
         self.sell_model = sell_model
         self.cash = initial_capital
         self.inventory = {}
-        self.max_positions = 10
-        self.position_size_pct = 0.10
+        self.max_positions = 1
+        self.position_size_pct = 0.95 # Bet heavily on 2330
         
         # Filter Dates
-        sample_ticker = list(data_dict.keys())[0]
-        df = data_dict[sample_ticker]
+        ticker = "2330.TW"
+        df = data_dict[ticker]
         mask = (df.index >= start_date) & (df.index <= end_date)
         self.dates = sorted(df[mask].index)
         self.trade_logs = []
+        
+        # Visualization Data
+        self.buy_points = [] # (Date, Price)
+        self.sell_points = [] # (Date, Price)
 
     def run(self):
-        print(f"執行回測 ({self.dates[0].date()} ~ {self.dates[-1].date()})...")
+        print(f"執行 2330.TW 回測 ({self.dates[0].date()} ~ {self.dates[-1].date()})...")
         records = []
+        ticker = "2330.TW"
+        
         for current_date in tqdm(self.dates):
+            df = self.data_dict[ticker]
+            row = df.loc[current_date]
+            price = row['Close']
+            
             # 1. 賣出檢查
-            for ticker in list(self.inventory.keys()):
+            if ticker in self.inventory:
                 info = self.inventory[ticker]
-                df = self.data_dict[ticker]
-                if current_date not in df.index: continue
-                row = df.loc[current_date]
-                price = row['Close']
                 info['days_held'] += 1
                 current_return = price / info['cost_price']
                 
@@ -205,56 +200,40 @@ class DetailedBacktesterFlexible:
                 
                 if should_sell:
                     self._sell(ticker, price, reason, current_date)
+                    self.sell_points.append((current_date, price))
 
             # 2. 買入檢查
             current_equity = 0
-            for t, info in self.inventory.items():
-                if current_date in self.data_dict[t].index:
-                    current_equity += info['shares'] * self.data_dict[t].loc[current_date]['Close']
-                else:
-                    current_equity += info['shares'] * info['cost_price']
+            if ticker in self.inventory:
+                current_equity = self.inventory[ticker]['shares'] * price
             total_asset = self.cash + current_equity
 
-            if len(self.inventory) < self.max_positions and self.cash > 10000:
-                tickers = list(self.data_dict.keys())
-                np.random.shuffle(tickers)
-                for ticker in tickers:
-                    if ticker in self.inventory: continue
-                    df = self.data_dict[ticker]
-                    if current_date not in df.index: continue
-                    row = df.loc[current_date]
-                    if row['Signal_Buy_Filter']:
-                        state = row[FEATURE_COLS].values.astype(np.float32)
-                        action, _ = self.buy_model.predict(state, deterministic=True)
-                        if action == 1:
-                            target_amt = total_asset * self.position_size_pct
-                            invest_amt = min(target_amt, self.cash)
-                            if invest_amt > row['Close'] * 1000:
-                                shares = int(invest_amt / row['Close'])
-                                cost = shares * row['Close'] * (1 + 0.001425)
-                                self.cash -= cost
-                                self.inventory[ticker] = {'shares': shares, 'cost_price': row['Close'], 'days_held': 0}
-                                self.trade_logs.append({
-                                    'Date': current_date, 'Ticker': ticker, 'Action': 'Buy',
-                                    'Price': row['Close'], 'Reason': 'AI_Signal',
-                                    'Shares': shares, 'Balance': self.cash
-                                })
-                                if len(self.inventory) >= self.max_positions: break
+            if ticker not in self.inventory and self.cash > 10000:
+                if row['Signal_Buy_Filter']:
+                    state = row[FEATURE_COLS].values.astype(np.float32)
+                    action, _ = self.buy_model.predict(state, deterministic=True)
+                    if action == 1:
+                        target_amt = total_asset * self.position_size_pct
+                        invest_amt = min(target_amt, self.cash)
+                        if invest_amt > price * 1000:
+                            shares = int(invest_amt / price)
+                            cost = shares * price * (1 + 0.001425)
+                            self.cash -= cost
+                            self.inventory[ticker] = {'shares': shares, 'cost_price': price, 'days_held': 0}
+                            self.trade_logs.append({
+                                'Date': current_date, 'Ticker': ticker, 'Action': 'Buy',
+                                'Price': price, 'Reason': 'AI_Signal'
+                            })
+                            self.buy_points.append((current_date, price))
             
             # 紀錄
             daily_equity = 0
-            held_stocks = []
-            for t, info in self.inventory.items():
-                if current_date in self.data_dict[t].index:
-                    val = info['shares'] * self.data_dict[t].loc[current_date]['Close']
-                else:
-                    val = info['shares'] * info['cost_price']
-                daily_equity += val
-                held_stocks.append(t)
+            if ticker in self.inventory:
+                daily_equity = self.inventory[ticker]['shares'] * price
             
             records.append({
                 'Date': current_date, 'Total_Value': self.cash + daily_equity,
-                'Cash': self.cash, 'Invested_Amount': daily_equity, 'Holdings_Count': len(held_stocks)
+                'Cash': self.cash, 'Invested_Amount': daily_equity, 'Holdings_Count': 1 if ticker in self.inventory else 0
             })
             
         return pd.DataFrame(records).set_index('Date'), self.trade_logs
@@ -266,15 +245,14 @@ class DetailedBacktesterFlexible:
         del self.inventory[ticker]
         self.trade_logs.append({
             'Date': date, 'Ticker': ticker, 'Action': 'Sell',
-            'Price': price, 'Reason': reason,
-            'Shares': info['shares'], 'Balance': self.cash
+            'Price': price, 'Reason': reason
         })
 
 # --- Main Execution ---
 if __name__ == "__main__":
     PROJECT_PATH, MODELS_PATH, RESULTS_PATH, DATA_PATH, device = setup_environment()
     
-    # Load Models (Split Version)
+    # Load Models
     print("Loading Models...")
     best_buy_path = os.path.join(MODELS_PATH, "best_buy_split", "best_model.zip")
     best_sell_path = os.path.join(MODELS_PATH, "best_sell_split", "best_model.zip")
@@ -307,18 +285,21 @@ if __name__ == "__main__":
     # Fetch Data
     raw_data_dict, market_index_df = fetch_tw50_data(DATA_PATH, start_date="2000-01-01")
     
+    if "2330.TW" not in raw_data_dict:
+        print("❌ 無法下載 2330.TW 資料")
+        sys.exit(1)
+        
     print("正在計算特徵...")
     processed_data = {}
     bench_df = raw_data_dict.get("^TWII")
-    for ticker, df in raw_data_dict.items():
-        if ticker != "^TWII":
-            try:
-                processed_data[ticker] = calculate_features(df, bench_df)
-            except Exception as e:
-                print(f"Error processing {ticker}: {e}")
-    
+    try:
+        processed_data["2330.TW"] = calculate_features(raw_data_dict["2330.TW"], bench_df)
+    except Exception as e:
+        print(f"Error processing 2330.TW: {e}")
+        sys.exit(1)
+        
     # Run Backtest
-    backtester = DetailedBacktesterFlexible(processed_data, buy_model, sell_model, start_date, end_date)
+    backtester = Backtester2330(processed_data, buy_model, sell_model, start_date, end_date)
     daily_stats, trade_logs = backtester.run()
     
     if not daily_stats.empty:
@@ -345,24 +326,42 @@ if __name__ == "__main__":
                  bench_data['Normalized_Value'] = (bench_data['Close'] / b_start) * initial_val
 
         # Plotting
-        plt.figure(figsize=(12, 6))
-        plt.plot(daily_stats.index, daily_stats['Total_Value'], label=f'AI Portfolio (ROI: {roi:.2f}%)', color='red')
+        plt.figure(figsize=(14, 8))
+        
+        # 1. Equity Curve
+        plt.subplot(2, 1, 1)
+        plt.plot(daily_stats.index, daily_stats['Total_Value'], label=f'AI Portfolio (ROI: {roi:.2f}%)', color='blue')
         if bench_data is not None:
             plt.plot(bench_data.index, bench_data['Normalized_Value'], label=f'^TWII (ROI: {bench_roi:.2f}%)', color='gray', linestyle='--')
-        plt.title(f'Flexible Backtest Equity Curve ({start_date} ~ {end_date})')
+        plt.title(f'2330.TW AI Strategy Equity ({start_date} ~ {end_date})')
         plt.legend()
         plt.grid(True)
-        plt.savefig(os.path.join(RESULTS_PATH, "flexible_backtest_result.png"))
-        print("Plot saved.")
         
-        # Save Trade Logs
-        if trade_logs:
-            log_df = pd.DataFrame(trade_logs)
-            log_path = os.path.join(RESULTS_PATH, "flexible_backtest_trades.csv")
-            log_df.to_csv(log_path, index=False)
-            print(f"Trade logs saved to: {log_path}")
-            
-            print("\n=== Recent Trades Summary ===")
-            print(log_df.tail(10).to_string(index=False))
-        else:
-            print("No trades executed.")
+        # 2. Price Chart with Signals
+        plt.subplot(2, 1, 2)
+        price_data = processed_data["2330.TW"].loc[start_date:end_date]
+        plt.plot(price_data.index, price_data['Close'], label='2330.TW Price', color='black', alpha=0.6)
+        
+        # Plot Buy Markers
+        buy_dates = [x[0] for x in backtester.buy_points]
+        buy_prices = [x[1] for x in backtester.buy_points]
+        plt.scatter(buy_dates, buy_prices, marker='^', color='red', s=100, label='Buy Signal', zorder=5)
+        
+        # Plot Sell Markers
+        sell_dates = [x[0] for x in backtester.sell_points]
+        sell_prices = [x[1] for x in backtester.sell_points]
+        plt.scatter(sell_dates, sell_prices, marker='v', color='green', s=100, label='Sell Signal', zorder=5)
+        
+        plt.title('Trade Execution Points')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        save_path = os.path.join(RESULTS_PATH, "backtest_2330.png")
+        plt.savefig(save_path)
+        print(f"\nPlot saved to: {save_path}")
+        
+        # Show recent logs
+        print("\nRecent Trades:")
+        for log in trade_logs[-5:]:
+            print(f"{log['Date'].date()} | {log['Action']} | Price: {log['Price']:.1f} | {log['Reason']}")
