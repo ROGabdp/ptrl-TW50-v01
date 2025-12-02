@@ -3,7 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 venv/
+venv_win/
 .env
+
+# Debug Scripts & Outputs
+debug_*.py
+diagnose_*.py
+check_*.py
+*.txt
 
 # Models and Data
 models/

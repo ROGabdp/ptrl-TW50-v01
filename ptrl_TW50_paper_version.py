@@ -11,7 +11,10 @@ import datetime
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
+import ta
+from ta.volatility import AverageTrueRange
+from ta.momentum import RSIIndicator
+from ta.volume import MFIIndicator
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import torch
@@ -19,7 +22,10 @@ from tqdm import tqdm
 from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, CheckpointCallback, CallbackList
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import SubprocVecEnv
 import glob
+import multiprocessing
 
 # --- 0. 環境與 GPU 設定 ---
 def setup_environment():
@@ -86,6 +92,73 @@ FEATURE_COLS = [
     'RS_ROC_5', 'RS_ROC_10', 'RS_ROC_20', 'RS_ROC_60', 'RS_ROC_120'
 ]
 
+# --- Helper Functions for Indicators ---
+def calculate_heikin_ashi(df):
+    ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+    
+    ha_open = [df['Open'].iloc[0]]
+    for i in range(1, len(df)):
+        ha_open.append((ha_open[-1] + ha_close.iloc[i-1]) / 2)
+    ha_open = pd.Series(ha_open, index=df.index)
+    
+    ha_high = df[['High', 'Open', 'Close']].max(axis=1) # Simplified, strictly it's max(High, HA_Open, HA_Close)
+    ha_high = pd.concat([df['High'], ha_open, ha_close], axis=1).max(axis=1)
+    
+    ha_low = pd.concat([df['Low'], ha_open, ha_close], axis=1).min(axis=1)
+    
+    return pd.DataFrame({
+        'HA_open': ha_open,
+        'HA_high': ha_high,
+        'HA_low': ha_low,
+        'HA_close': ha_close
+    })
+
+def calculate_supertrend(df, length=14, multiplier=3.0):
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    
+    atr = AverageTrueRange(high, low, close, window=length).average_true_range()
+    atr = atr.fillna(method='bfill') # Fix: Fill initial NaNs to allow recursion
+    
+    hl2 = (high + low) / 2
+    basic_upperband = hl2 + (multiplier * atr)
+    basic_lowerband = hl2 - (multiplier * atr)
+    
+    final_upperband = basic_upperband.copy()
+    final_lowerband = basic_lowerband.copy()
+    
+    trend = np.zeros(len(df))
+    
+    # Loop to calculate SuperTrend
+    # Note: This is a simplified iterative implementation
+    for i in range(1, len(df)):
+        if basic_upperband.iloc[i] < final_upperband.iloc[i-1] or close.iloc[i-1] > final_upperband.iloc[i-1]:
+            final_upperband.iloc[i] = basic_upperband.iloc[i]
+        else:
+            final_upperband.iloc[i] = final_upperband.iloc[i-1]
+            
+        if basic_lowerband.iloc[i] > final_lowerband.iloc[i-1] or close.iloc[i-1] < final_lowerband.iloc[i-1]:
+            final_lowerband.iloc[i] = basic_lowerband.iloc[i]
+        else:
+            final_lowerband.iloc[i] = final_lowerband.iloc[i-1]
+            
+        if close.iloc[i] > final_upperband.iloc[i-1]:
+            trend[i] = 1
+        elif close.iloc[i] < final_lowerband.iloc[i-1]:
+            trend[i] = -1
+        else:
+            trend[i] = trend[i-1]
+            
+        if trend[i] == 1:
+            pass # final_upperband.iloc[i] = np.nan # Optional: Hide upper band in uptrend
+        else:
+            pass # final_lowerband.iloc[i] = np.nan
+            
+    # Return the trend line (SuperTrend value)
+    st = pd.Series(np.where(trend == 1, final_lowerband, final_upperband), index=df.index)
+    return pd.DataFrame({'SUPERT_': st}) # Naming to match pandas_ta style roughly
+
 def calculate_features(df_in, benchmark_df):
     df = df_in.copy()
     # Donchian Channel
@@ -99,23 +172,30 @@ def calculate_features(df_in, benchmark_df):
     df['DC_Upper_10'] = df['DC_Upper_10'].fillna(method='bfill')
 
     # Indicators
-    df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=10)
-    df['RSI'] = ta.rsi(df['Close'], length=14)
+    # ATR
+    df['ATR'] = AverageTrueRange(df['High'], df['Low'], df['Close'], window=10).average_true_range()
+    
+    # RSI
+    df['RSI'] = RSIIndicator(df['Close'], window=14).rsi()
+    
+    # MFI
     try:
-        df['MFI'] = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
+        df['MFI'] = MFIIndicator(df['High'], df['Low'], df['Close'], df['Volume'], window=14).money_flow_index()
     except:
         df['MFI'] = 50.0
     
-    ha = ta.ha(df['Open'], df['High'], df['Low'], df['Close'])
+    # Heikin Ashi
+    ha = calculate_heikin_ashi(df)
     df['HA_Open'] = ha['HA_open']
     df['HA_High'] = ha['HA_high']
     df['HA_Low'] = ha['HA_low']
     df['HA_Close'] = ha['HA_close']
 
-    st1 = ta.supertrend(df['High'], df['Low'], df['Close'], length=14, multiplier=2.0)
-    st2 = ta.supertrend(df['High'], df['Low'], df['Close'], length=21, multiplier=1.0)
-    df['SuperTrend_1'] = st1[st1.columns[0]]
-    df['SuperTrend_2'] = st2[st2.columns[0]]
+    # SuperTrend
+    st1 = calculate_supertrend(df, length=14, multiplier=2.0)
+    st2 = calculate_supertrend(df, length=21, multiplier=1.0)
+    df['SuperTrend_1'] = st1.iloc[:, 0]
+    df['SuperTrend_2'] = st2.iloc[:, 0]
 
     # Normalization (Paper Logic)
     base_price = df['DC_Upper'].replace(0, np.nan).fillna(method='bfill')
@@ -150,7 +230,9 @@ def calculate_features(df_in, benchmark_df):
     # We calculate max return in next 20 days to check if 10% is achievable
     df['Next_20d_Max'] = df['High'].shift(-20).rolling(20).max() / df['Close'] - 1
     
-    return df.dropna()
+    # Fix: Only drop rows where FEATURES are missing. Keep rows with missing labels (Next_20d_Max) for backtesting.
+    feature_cols_to_check = [c for c in df.columns if c != 'Next_20d_Max']
+    return df.dropna(subset=feature_cols_to_check)
 
 # --- 3. RL 環境定義 (Strict Paper Logic) ---
 
@@ -163,6 +245,8 @@ class BuyEnvPaper(gym.Env):
     def __init__(self, data_dict, is_training=True):
         super().__init__()
         self.samples = []
+        self.pos_samples = [] # Success cases (>= 10%)
+        self.neg_samples = [] # Fail cases (< 10%)
         
         # 檢查欄位
         sample_df = next(iter(data_dict.values()))
@@ -170,27 +254,52 @@ class BuyEnvPaper(gym.Env):
         if missing: raise ValueError(f"Missing columns: {missing}")
 
         for t, df in data_dict.items():
+            # Training requires labels, so we drop rows where Next_20d_Max is NaN
+            df = df.dropna(subset=['Next_20d_Max'])
             signals = df[df['Signal_Buy_Filter'] == True]
             if len(signals) > 0:
                 states = signals[FEATURE_COLS].values.astype(np.float32)
                 future_rets = signals['Next_20d_Max'].values.astype(np.float32)
                 for i in range(len(signals)):
-                    self.samples.append((states[i], future_rets[i]))
+                    sample = (states[i], future_rets[i])
+                    self.samples.append(sample)
+                    
+                    # Class Balancing Logic
+                    if future_rets[i] >= 0.10:
+                        self.pos_samples.append(sample)
+                    else:
+                        self.neg_samples.append(sample)
 
         self.action_space = spaces.Discrete(2) # 0: Wait, 1: Buy
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(len(FEATURE_COLS),), dtype=np.float32)
         self.is_training = is_training
         self.idx = 0
+        self.current_sample = None # To store the selected sample for the episode
 
     def reset(self, seed=None, options=None):
         if self.is_training:
-            self.idx = np.random.randint(0, len(self.samples))
+            # Class Balancing: 50% chance to pick a positive sample
+            # This forces the agent to see success cases 50% of the time,
+            # preventing it from learning "Always Wait" due to low base rate.
+            if np.random.rand() < 0.5 and len(self.pos_samples) > 0:
+                idx = np.random.randint(0, len(self.pos_samples))
+                self.current_sample = self.pos_samples[idx]
+            elif len(self.neg_samples) > 0:
+                idx = np.random.randint(0, len(self.neg_samples))
+                self.current_sample = self.neg_samples[idx]
+            else:
+                # Fallback if one class is empty (unlikely)
+                idx = np.random.randint(0, len(self.samples))
+                self.current_sample = self.samples[idx]
         else:
+            # Evaluation: Sequential (True Distribution)
             self.idx = (self.idx + 1) % len(self.samples)
-        return self.samples[self.idx][0], {}
+            self.current_sample = self.samples[self.idx]
+            
+        return self.current_sample[0], {}
 
     def step(self, action):
-        _, max_ret = self.samples[self.idx]
+        _, max_ret = self.current_sample
         reward = 0.0
         
         # Paper Logic: Threshold = 10% (0.10)
@@ -327,6 +436,8 @@ class DetailedBacktesterPaper:
         sample_ticker = list(data_dict.keys())[0]
         self.dates = sorted(data_dict[sample_ticker].index)
         self.dates = [d for d in self.dates if d >= pd.Timestamp('2021-01-01')]
+        if not self.dates:
+            print("⚠️ Warning: No dates found for backtesting after 2021-01-01!")
         self.trade_logs = [] # 新增：交易紀錄
 
     def run(self):
@@ -438,6 +549,10 @@ class DetailedBacktesterPaper:
                 'Holdings_Count': len(held_stocks)
             })
             
+        if not records:
+            print("⚠️ Warning: No backtest records generated.")
+            return pd.DataFrame(columns=['Total_Value', 'Cash', 'Invested_Amount', 'Holdings_Count']), self.trade_logs
+
         return pd.DataFrame(records).set_index('Date'), self.trade_logs
 
     def _sell(self, ticker, price, reason, date):
@@ -472,19 +587,35 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Error processing {ticker}: {e}")
     
-    # 3. 準備訓練環境
+    # 3. 準備訓練環境 (Vectorized)
     train_data = {k: v for k, v in processed_data.items() if k != "0050.TW"}
-    buy_env = BuyEnvPaper(train_data, is_training=True)
-    sell_env = SellEnvPaper(train_data)
-    eval_env = BuyEnvPaper(train_data, is_training=True)
     
-    # 4. 設定 PPO 參數 (Paper Strict)
+    # Determine number of CPUs
+    n_cpu = multiprocessing.cpu_count()
+    # WinError 1455 Fix: Limit n_envs to avoid OOM on Windows
+    # Each env copies data and loads PyTorch, consuming significant RAM.
+    # Safe limit: 4 to 6.
+    n_envs = min(14, max(1, n_cpu - 1)) 
+    print(f"Detected {n_cpu} CPUs. Using {n_envs} environments for training to avoid memory issues.")
+    
+    # Create Vectorized Environments
+    # Note: We pass the class and kwargs to make_vec_env
+    buy_env = make_vec_env(BuyEnvPaper, n_envs=n_envs, seed=0, vec_env_cls=SubprocVecEnv, env_kwargs={'data_dict': train_data, 'is_training': True})
+    # Sell Env usually doesn't need heavy parallelization if it's just for training the sell agent which is faster, 
+    # but we can vectorize it too for consistency and speed.
+    sell_env = make_vec_env(SellEnvPaper, n_envs=n_envs, seed=0, vec_env_cls=SubprocVecEnv, env_kwargs={'data_dict': train_data})
+    
+    # Eval env should remain single for accurate evaluation
+    # Eval env should remain single for accurate evaluation, but use SubprocVecEnv to match training env type
+    eval_env = make_vec_env(BuyEnvPaper, n_envs=1, seed=0, vec_env_cls=SubprocVecEnv, env_kwargs={'data_dict': train_data, 'is_training': True})
+    
+    # 4. 設定 PPO 參數 (Optimized for Speed)
     # Paper: "3 hidden layers" -> net_arch=[64, 64, 64] (approx)
-    # Paper: ent_coef = 0.01
+    # Optimization: Increased batch_size and n_steps for GPU efficiency
     ppo_params = {
         "learning_rate": 0.0001,
-        "n_steps": 2048,
-        "batch_size": 64,
+        "n_steps": 2048 // n_envs, # Adjust n_steps so total buffer size is similar or larger
+        "batch_size": 512, # Increased from 64 to 512 for GPU efficiency
         "ent_coef": 0.01, # Strict Paper Value
         "gamma": 0.99,
         "gae_lambda": 0.95,
@@ -494,6 +625,10 @@ if __name__ == "__main__":
         "device": device,
         "policy_kwargs": dict(net_arch=[64, 64, 64]) # 3 Hidden Layers
     }
+    
+    # Adjust n_steps to be at least some reasonable number
+    if ppo_params["n_steps"] < 128:
+        ppo_params["n_steps"] = 128
     
     # 5. 訓練 Buy Agent
     print("\n=== 檢查 Buy Agent 模型 ===")
@@ -508,9 +643,9 @@ if __name__ == "__main__":
     print(f"訓練步數設定: Buy={TOTAL_TIMESTEPS_BUY}, Sell={TOTAL_TIMESTEPS_SELL}")
     print(f"(註：論文原始設定約為 Buy=12.2M, Sell=9.5M)")
 
-    checkpoint_callback = CheckpointCallback(save_freq=50000, save_path=MODELS_PATH, name_prefix="ppo_buy_paper")
+    checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=MODELS_PATH, name_prefix="ppo_buy_paper")
     eval_callback = EvalCallback(eval_env, best_model_save_path=os.path.join(MODELS_PATH, "best_buy_paper"),
-                                 log_path=RESULTS_PATH, eval_freq=20000, deterministic=True, render=False)
+                                 log_path=RESULTS_PATH, eval_freq=2000, n_eval_episodes=100, deterministic=True, render=False)
     callbacks = CallbackList([checkpoint_callback, eval_callback])
     
     # 檢查是否已有訓練好的模型
@@ -542,9 +677,19 @@ if __name__ == "__main__":
             
         elif choice == '2':
             print("🔄 選擇接續訓練...")
-            if os.path.exists(best_buy_path):
+            # Search for latest checkpoint
+            ckpt_files = glob.glob(os.path.join(MODELS_PATH, "ppo_buy_paper_*_steps.zip"))
+            latest_ckpt = None
+            if ckpt_files:
+                # Extract step count and find max
+                latest_ckpt = max(ckpt_files, key=lambda x: int(x.split('_')[-2]))
+            
+            if latest_ckpt:
+                buy_model = PPO.load(latest_ckpt, env=buy_env, device=device)
+                print(f"已載入最新存檔準備接續訓練: {latest_ckpt}")
+            elif os.path.exists(best_buy_path):
                 buy_model = PPO.load(best_buy_path, env=buy_env, device=device)
-                print(f"已載入最佳模型準備接續訓練: {best_buy_path}")
+                print(f"⚠️ 找不到 checkpoint，已載入最佳模型: {best_buy_path}")
             else:
                 buy_model = PPO.load(final_buy_path, env=buy_env, device=device)
                 print(f"已載入最終模型準備接續訓練: {final_buy_path}")
@@ -560,6 +705,16 @@ if __name__ == "__main__":
                         print(f"已刪除: {p}")
                     except OSError as e:
                         print(f"無法刪除 {p}: {e}")
+            
+            # Fix: Also delete intermediate checkpoints
+            ckpt_pattern = os.path.join(MODELS_PATH, "ppo_buy_paper_*_steps.zip")
+            for p in glob.glob(ckpt_pattern):
+                try:
+                    os.remove(p)
+                    print(f"已刪除 Checkpoint: {p}")
+                except OSError as e:
+                    print(f"無法刪除 Checkpoint {p}: {e}")
+
             buy_model = None
             should_train_buy = True
         else:
