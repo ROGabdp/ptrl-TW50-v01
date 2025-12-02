@@ -10,7 +10,10 @@ import datetime
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
+import ta
+from ta.volatility import AverageTrueRange
+from ta.momentum import RSIIndicator
+from ta.volume import MFIIndicator
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import torch
@@ -106,6 +109,69 @@ FEATURE_COLS = [
     'RS_ROC_5', 'RS_ROC_10', 'RS_ROC_20', 'RS_ROC_60', 'RS_ROC_120'
 ]
 
+# --- Helper Functions for Indicators ---
+def calculate_heikin_ashi(df):
+    ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+    
+    ha_open = [df['Open'].iloc[0]]
+    for i in range(1, len(df)):
+        ha_open.append((ha_open[-1] + ha_close.iloc[i-1]) / 2)
+    ha_open = pd.Series(ha_open, index=df.index)
+    
+    ha_high = df[['High', 'Open', 'Close']].max(axis=1) # Simplified
+    ha_high = pd.concat([df['High'], ha_open, ha_close], axis=1).max(axis=1)
+    
+    ha_low = pd.concat([df['Low'], ha_open, ha_close], axis=1).min(axis=1)
+    
+    return pd.DataFrame({
+        'HA_open': ha_open,
+        'HA_high': ha_high,
+        'HA_low': ha_low,
+        'HA_close': ha_close
+    })
+
+def calculate_supertrend(df, length=14, multiplier=3.0):
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    
+    atr = AverageTrueRange(high, low, close, window=length).average_true_range()
+    
+    hl2 = (high + low) / 2
+    basic_upperband = hl2 + (multiplier * atr)
+    basic_lowerband = hl2 - (multiplier * atr)
+    
+    final_upperband = basic_upperband.copy()
+    final_lowerband = basic_lowerband.copy()
+    
+    trend = np.zeros(len(df))
+    
+    for i in range(1, len(df)):
+        if basic_upperband.iloc[i] < final_upperband.iloc[i-1] or close.iloc[i-1] > final_upperband.iloc[i-1]:
+            final_upperband.iloc[i] = basic_upperband.iloc[i]
+        else:
+            final_upperband.iloc[i] = final_upperband.iloc[i-1]
+            
+        if basic_lowerband.iloc[i] > final_lowerband.iloc[i-1] or close.iloc[i-1] < final_lowerband.iloc[i-1]:
+            final_lowerband.iloc[i] = basic_lowerband.iloc[i]
+        else:
+            final_lowerband.iloc[i] = final_lowerband.iloc[i-1]
+            
+        if close.iloc[i] > final_upperband.iloc[i-1]:
+            trend[i] = 1
+        elif close.iloc[i] < final_lowerband.iloc[i-1]:
+            trend[i] = -1
+        else:
+            trend[i] = trend[i-1]
+            
+        if trend[i] == 1:
+            final_upperband.iloc[i] = np.nan
+        else:
+            final_lowerband.iloc[i] = np.nan
+            
+    st = pd.Series(np.where(trend == 1, final_lowerband, final_upperband), index=df.index)
+    return pd.DataFrame({'SUPERT_': st})
+
 def calculate_features(df_in, benchmark_df):
     df = df_in.copy()
 
@@ -123,25 +189,30 @@ def calculate_features(df_in, benchmark_df):
     df['DC_Upper_10'] = df['DC_Upper_10'].fillna(method='bfill')
 
     # 基礎指標
-    df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=10)
-    df['RSI'] = ta.rsi(df['Close'], length=14)
+    # ATR
+    df['ATR'] = AverageTrueRange(df['High'], df['Low'], df['Close'], window=10).average_true_range()
+    
+    # RSI
+    df['RSI'] = RSIIndicator(df['Close'], window=14).rsi()
+    
+    # MFI
     try:
-        df['MFI'] = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
+        df['MFI'] = MFIIndicator(df['High'], df['Low'], df['Close'], df['Volume'], window=14).money_flow_index()
     except:
         df['MFI'] = 50.0
 
     # Heikin Ashi
-    ha = ta.ha(df['Open'], df['High'], df['Low'], df['Close'])
+    ha = calculate_heikin_ashi(df)
     df['HA_Open'] = ha['HA_open']
     df['HA_High'] = ha['HA_high']
     df['HA_Low'] = ha['HA_low']
     df['HA_Close'] = ha['HA_close']
 
     # SuperTrend
-    st1 = ta.supertrend(df['High'], df['Low'], df['Close'], length=14, multiplier=2.0)
-    st2 = ta.supertrend(df['High'], df['Low'], df['Close'], length=21, multiplier=1.0)
-    df['SuperTrend_1'] = st1[st1.columns[0]]
-    df['SuperTrend_2'] = st2[st2.columns[0]]
+    st1 = calculate_supertrend(df, length=14, multiplier=2.0)
+    st2 = calculate_supertrend(df, length=21, multiplier=1.0)
+    df['SuperTrend_1'] = st1.iloc[:, 0]
+    df['SuperTrend_2'] = st2.iloc[:, 0]
 
     # --- 2. 論文正規化邏輯 (Normalization) ---
     # [A] 價格類正規化：除以 DC_Upper
