@@ -1,9 +1,11 @@
 stable-baselines3[extra]
 yfinance
 pandas
-pandas_ta
+pandas-ta-openbb
 gymnasium
 matplotlib
 shimmy>=0.2.1
 torch
 tqdm
+
+ta
