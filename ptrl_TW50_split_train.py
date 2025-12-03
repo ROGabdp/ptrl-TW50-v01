@@ -798,5 +798,6 @@ if __name__ == "__main__":
         plt.title('Out-of-Sample Backtest (2012-2017)')
         plt.legend()
         plt.grid(True)
-        plt.savefig(os.path.join(RESULTS_PATH, "split_test_performance.png"))
-        print("Plot saved.")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        plt.savefig(os.path.join(RESULTS_PATH, f"split_test_performance_{timestamp}.png"))
+        print(f"Plot saved: split_test_performance_{timestamp}.png")

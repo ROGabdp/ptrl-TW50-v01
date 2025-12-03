@@ -322,6 +322,7 @@ if __name__ == "__main__":
     daily_stats, trade_logs = backtester.run()
     
     if not daily_stats.empty:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         initial_val = daily_stats.iloc[0]['Total_Value']
         final_val = daily_stats.iloc[-1]['Total_Value']
         roi = (final_val - initial_val) / initial_val * 100
@@ -352,13 +353,13 @@ if __name__ == "__main__":
         plt.title(f'Flexible Backtest Equity Curve ({start_date} ~ {end_date})')
         plt.legend()
         plt.grid(True)
-        plt.savefig(os.path.join(RESULTS_PATH, "flexible_backtest_result.png"))
+        plt.savefig(os.path.join(RESULTS_PATH, f"flexible_backtest_result_{timestamp}.png"))
         print("Plot saved.")
         
         # Save Trade Logs
         if trade_logs:
             log_df = pd.DataFrame(trade_logs)
-            log_path = os.path.join(RESULTS_PATH, "flexible_backtest_trades.csv")
+            log_path = os.path.join(RESULTS_PATH, f"flexible_backtest_trades_{timestamp}.csv")
             log_df.to_csv(log_path, index=False)
             print(f"Trade logs saved to: {log_path}")
             
