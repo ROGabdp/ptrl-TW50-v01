@@ -557,6 +557,10 @@ class DetailedBacktesterPaper:
                 plt.figure(figsize=(14, 7))
                 plt.plot(df_plot.index, df_plot['Close'], label='Close Price', color='black', alpha=0.6)
                 
+                # Plot MA60
+                if 'MA60' in df_plot.columns:
+                    plt.plot(df_plot.index, df_plot['MA60'], label='MA60', color='blue', linestyle='--', alpha=0.7)
+                
                 # Plot Buy Points
                 buys = df_log[(df_log['Ticker'] == ticker) & (df_log['Action'] == 'Buy')]
                 plt.scatter(buys['Date'], buys['Price'], marker='^', color='red', s=100, label='Buy', zorder=5)
